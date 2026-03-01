@@ -17,8 +17,10 @@ tools:
   github:
     toolsets: [default]
 safe-outputs:
-  add-comment: true
-  add-labels: true
+  add-comment:
+    max: 5
+  add-labels:
+    target: issue
 ---
 
 # HydroMorph React Native — Agentic Workflow
