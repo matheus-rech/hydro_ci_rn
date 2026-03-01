@@ -11,8 +11,8 @@ on:
     types: [completed]
 permissions:
   contents: read
-  issues: write
-  pull-requests: write
+  issues: read
+  pull-requests: read
 tools:
   github:
     toolsets: [default]
