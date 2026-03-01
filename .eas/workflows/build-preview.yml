@@ -1,0 +1,19 @@
+name: Build Preview Apps
+
+on:
+  pull_request:
+    branches: ['main']
+
+jobs:
+  build_android_preview:
+    name: Build Android Preview
+    type: build
+    params:
+      platform: android
+      profile: preview
+  build_ios_preview:
+    name: Build iOS Preview
+    type: build
+    params:
+      platform: ios
+      profile: preview
