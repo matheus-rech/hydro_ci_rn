@@ -20,7 +20,7 @@ safe-outputs:
   add-comment:
     max: 5
   add-labels:
-    target: issue
+    target: triggering
 ---
 
 # HydroMorph React Native — Agentic Workflow
