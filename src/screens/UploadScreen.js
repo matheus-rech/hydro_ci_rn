@@ -2,8 +2,15 @@
  * UploadScreen — File picker and entry point
  *
  * Allows users to:
- *  1. Pick a NIfTI file (.nii / .nii.gz) via expo-document-picker
+ *  1. Pick a NIfTI (.nii / .nii.gz), DICOM (.dcm), or image (.png/.jpg) file
+ *     via expo-document-picker (supports multi-select for DICOM series)
  *  2. Load the bundled sample CT scan
+ *
+ * File routing:
+ *   .nii / .nii.gz       → NiftiReader (existing)
+ *   .dcm or DICOM magic  → DicomReader.parseDicomSeries
+ *   .png / .jpg / .jpeg  → DicomReader.parseImageFile
+ *   Multiple files       → assumed to be DICOM series
  *
  * Author: Matheus Machado Rech
  */
@@ -16,72 +23,204 @@ import {
   StyleSheet,
   ScrollView,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import { colors, spacing, radius, typography } from '../theme';
+import { isDicomBuffer } from '../pipeline/DicomReader';
+
+// ─── File type detection helpers ──────────────────────────────────────────────
+
+function getFileType(name = '') {
+  const lower = name.toLowerCase();
+  if (lower.endsWith('.nii.gz') || lower.endsWith('.nii')) return 'nifti';
+  if (lower.endsWith('.dcm') || lower.endsWith('.dicom')) return 'dicom';
+  if (lower.endsWith('.png')) return 'image';
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image';
+  return 'unknown';
+}
+
+/**
+ * Determine file type from name + optionally sniff the magic bytes.
+ * Returns 'nifti' | 'dicom' | 'image' | 'unknown'
+ */
+function detectFileType(name, dicomMagicConfirmed = false) {
+  const byName = getFileType(name);
+  if (byName !== 'unknown') return byName;
+  if (dicomMagicConfirmed) return 'dicom';
+  return 'unknown';
+}
+
+// ─── Main Screen ──────────────────────────────────────────────────────────────
 
 export default function UploadScreen({ navigation }) {
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [loadingMsg, setLoadingMsg] = useState('');
+  const [error, setError]   = useState('');
 
-  // ── File picker ────────────────────────────────────────────────────────────
+  // ── File picker ─────────────────────────────────────────────────────────────
 
   async function handlePickFile() {
     setError('');
     try {
       const result = await DocumentPicker.getDocumentAsync({
+        // Accept NIfTI, DICOM, and common image types
         type: Platform.OS === 'ios'
-          ? ['public.data', 'org.gnu.gnu-zip-archive']
+          ? ['public.data', 'org.gnu.gnu-zip-archive', 'org.dicom.dcm', 'public.image']
           : ['*/*'],
         copyToCacheDirectory: true,
-        multiple: false,
+        multiple: true,  // Allow multiple files for DICOM series
       });
 
       if (result.canceled || !result.assets || result.assets.length === 0) return;
 
-      const asset = result.assets[0];
-      const name  = (asset.name || '').toLowerCase();
+      const assets = result.assets;
 
-      if (!name.endsWith('.nii') && !name.endsWith('.nii.gz')) {
-        setError('Please select a NIfTI file (.nii or .nii.gz)');
+      // ── Multiple files → DICOM series ──────────────────────────────────────
+      if (assets.length > 1) {
+        // Validate all files are DICOM-compatible
+        const nonDicom = assets.filter(a => {
+          const t = getFileType(a.name || '');
+          return t === 'nifti' || t === 'image';
+        });
+        if (nonDicom.length > 0) {
+          setError(
+            'When selecting multiple files, all must be DICOM (.dcm) files for a series. ' +
+            'For NIfTI or image files, select a single file.'
+          );
+          return;
+        }
+
+        await startProcessing({
+          assets,
+          fileType: 'dicom-series',
+          fileName: `DICOM Series (${assets.length} slices)`,
+          fileSize: assets.reduce((s, a) => s + (a.size || 0), 0),
+          isSample: false,
+        });
+        return;
+      }
+
+      // ── Single file ────────────────────────────────────────────────────────
+      const asset = assets[0];
+      const name  = (asset.name || '').toLowerCase();
+      const type  = detectFileType(name);
+
+      if (type === 'unknown') {
+        setError(
+          'Unsupported file format. Please select a NIfTI (.nii, .nii.gz), ' +
+          'DICOM (.dcm), or image (.png, .jpg) file.'
+        );
         return;
       }
 
       await startProcessing({
-        uri:      asset.uri,
+        assets: [asset],
+        fileType: type,
         fileName: asset.name,
         fileSize: asset.size || 0,
         isSample: false,
       });
+
     } catch (err) {
       if (err.code === 'DOCUMENT_PICKER_CANCELED') return;
       setError(err.message || 'Failed to pick file.');
     }
   }
 
-  // ── Sample data ────────────────────────────────────────────────────────────
+  // ── Sample data ─────────────────────────────────────────────────────────────
 
   async function handleSample() {
     setError('');
-    await startProcessing({ isSample: true });
+    await startProcessing({ fileType: 'sample', isSample: true });
   }
 
-  // ── Shared processing entry ────────────────────────────────────────────────
+  // ── Shared processing entry ──────────────────────────────────────────────────
 
-  async function startProcessing({ uri, fileName, fileSize, isSample }) {
+  async function startProcessing({ assets, fileType, fileName, fileSize, isSample }) {
     setLoading(true);
+    setLoadingMsg('');
 
-    navigation.navigate('Processing', {
-      uri,
-      fileName: isSample ? 'Sample CT — CADS BrainCT-1mm Subject 155' : fileName,
-      fileSize: isSample ? 0 : fileSize,
-      isSample: !!isSample,
-    });
+    try {
+      if (isSample || fileType === 'sample') {
+        navigation.navigate('Processing', {
+          fileType:  'sample',
+          fileName:  'Sample CT — CADS BrainCT-1mm Subject 155',
+          fileSize:  0,
+          isSample:  true,
+        });
+        return;
+      }
 
-    setLoading(false);
+      if (fileType === 'nifti') {
+        // Single NIfTI file — pass URI directly to ProcessingScreen
+        navigation.navigate('Processing', {
+          fileType:  'nifti',
+          uri:       assets[0].uri,
+          fileName:  fileName,
+          fileSize:  fileSize,
+          isSample:  false,
+        });
+        return;
+      }
+
+      if (fileType === 'dicom' || fileType === 'dicom-series') {
+        // Read each DICOM file as base64 → ArrayBuffer, then navigate
+        // We show a loading message since 100+ files can take a few seconds
+        setLoadingMsg(
+          assets.length > 1
+            ? `Reading ${assets.length} DICOM files…`
+            : 'Reading DICOM file…'
+        );
+
+        const FileSystem = require('expo-file-system');
+        const buffers = [];
+
+        for (let i = 0; i < assets.length; i++) {
+          if (assets.length > 10) {
+            setLoadingMsg(`Reading DICOM files… ${i + 1} / ${assets.length}`);
+          }
+          const b64 = await FileSystem.readAsStringAsync(assets[i].uri, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          const bin = atob(b64);
+          const buf = new ArrayBuffer(bin.length);
+          const u8  = new Uint8Array(buf);
+          for (let j = 0; j < bin.length; j++) u8[j] = bin.charCodeAt(j);
+          buffers.push(buf);
+        }
+
+        navigation.navigate('Processing', {
+          fileType:   'dicom',
+          dicomBuffers: null,   // We can't pass buffers through nav params easily
+          // Instead, pass URIs and let ProcessingScreen re-read them
+          uris:       assets.map(a => a.uri),
+          fileName:   fileName,
+          fileSize:   fileSize,
+          isSample:   false,
+          numSlices:  assets.length,
+        });
+        return;
+      }
+
+      if (fileType === 'image') {
+        navigation.navigate('Processing', {
+          fileType: 'image',
+          uri:      assets[0].uri,
+          fileName: fileName,
+          fileSize: fileSize,
+          isSample: false,
+        });
+        return;
+      }
+
+    } finally {
+      setLoading(false);
+      setLoadingMsg('');
+    }
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────────
   return (
     <ScrollView
       style={styles.screen}
@@ -102,22 +241,32 @@ export default function UploadScreen({ navigation }) {
         style={styles.dropZone}
         onPress={handlePickFile}
         activeOpacity={0.7}
+        disabled={loading}
         accessibilityRole="button"
-        accessibilityLabel="Select a NIfTI head CT scan"
+        accessibilityLabel="Select a head CT scan file"
       >
-        <Text style={styles.dropIcon}>⬆</Text>
-        <Text style={styles.dropTitle}>Tap to select a head CT scan</Text>
-        <Text style={styles.dropHint}>
-          Processes entirely on-device.{'\n'}No data ever leaves your device.
-        </Text>
-        <View style={styles.formatRow}>
-          <View style={styles.formatBadge}>
-            <Text style={styles.formatBadgeText}>.nii</Text>
-          </View>
-          <View style={styles.formatBadge}>
-            <Text style={styles.formatBadgeText}>.nii.gz</Text>
-          </View>
-        </View>
+        {loading ? (
+          <>
+            <ActivityIndicator size="large" color={colors.accent} style={{ marginBottom: 16 }} />
+            <Text style={styles.dropTitle}>{loadingMsg || 'Loading…'}</Text>
+          </>
+        ) : (
+          <>
+            <Text style={styles.dropIcon}>⬆</Text>
+            <Text style={styles.dropTitle}>Tap to select a head CT scan</Text>
+            <Text style={styles.dropHint}>
+              NIfTI, DICOM, or images.{'\\n'}Processes entirely on-device.
+            </Text>
+            {/* Format badges */}
+            <View style={styles.formatRow}>
+              <FormatBadge label=".nii" />
+              <FormatBadge label=".nii.gz" />
+              <FormatBadge label=".dcm" color={colors.cyan} />
+              <FormatBadge label=".png" color={colors.green} />
+              <FormatBadge label=".jpg" color={colors.green} />
+            </View>
+          </>
+        )}
       </TouchableOpacity>
 
       {/* Error */}
@@ -141,6 +290,7 @@ export default function UploadScreen({ navigation }) {
         style={styles.sampleBtn}
         onPress={handleSample}
         activeOpacity={0.7}
+        disabled={loading}
         accessibilityRole="button"
         accessibilityLabel="Try with sample CT scan"
       >
@@ -148,10 +298,22 @@ export default function UploadScreen({ navigation }) {
         <Text style={styles.sampleBtnText}>Try with sample CT scan</Text>
       </TouchableOpacity>
 
+      {/* Settings link */}
+      <TouchableOpacity
+        style={styles.settingsBtn}
+        onPress={() => navigation.navigate('Settings')}
+        activeOpacity={0.7}
+        accessibilityRole="button"
+        accessibilityLabel="Open settings"
+      >
+        <Text style={styles.settingsBtnIcon}>⚙</Text>
+        <Text style={styles.settingsBtnText}>MedSAM2 AI Settings</Text>
+      </TouchableOpacity>
+
       {/* Footer */}
       <View style={styles.footer}>
         <Text style={styles.footerLine}>
-          Supports NIfTI-1 format · Head CT in Hounsfield Units
+          Supports NIfTI · DICOM · PNG/JPG · Head CT in Hounsfield Units
         </Text>
         <Text style={styles.footerLine}>
           Built by{' '}
@@ -166,6 +328,24 @@ export default function UploadScreen({ navigation }) {
     </ScrollView>
   );
 }
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+function FormatBadge({ label, color }) {
+  return (
+    <View style={[
+      styles.formatBadge,
+      color && {
+        backgroundColor: `${color}18`,
+        borderColor: `${color}40`,
+      },
+    ]}>
+      <Text style={[styles.formatBadgeText, color && { color }]}>{label}</Text>
+    </View>
+  );
+}
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   screen: {
@@ -226,7 +406,7 @@ const styles = StyleSheet.create({
     padding: spacing.huge,
     alignItems: 'center',
     backgroundColor: colors.surface,
-    minHeight: 220,
+    minHeight: 240,
     justifyContent: 'center',
   },
   dropIcon: {
@@ -248,8 +428,10 @@ const styles = StyleSheet.create({
   },
   formatRow: {
     flexDirection: 'row',
-    gap: 8,
+    flexWrap: 'wrap',
+    gap: 6,
     marginTop: 16,
+    justifyContent: 'center',
   },
   formatBadge: {
     backgroundColor: 'rgba(88,166,255,0.1)',
@@ -281,6 +463,7 @@ const styles = StyleSheet.create({
     color: colors.red,
     fontSize: typography.base,
     textAlign: 'center',
+    lineHeight: 20,
   },
 
   // Privacy strip
@@ -334,6 +517,33 @@ const styles = StyleSheet.create({
   sampleBtnText: {
     color: colors.accent,
     fontSize: typography.md,
+    fontWeight: typography.medium,
+  },
+
+  // Settings button
+  settingsBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 8,
+    padding: 12,
+    paddingHorizontal: spacing.xl,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: 'rgba(255,255,255,0.02)',
+    maxWidth: 480,
+    width: '100%',
+    minHeight: 44,
+  },
+  settingsBtnIcon: {
+    fontSize: 14,
+    color: colors.muted,
+  },
+  settingsBtnText: {
+    color: colors.muted,
+    fontSize: typography.base,
     fontWeight: typography.medium,
   },
 

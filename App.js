@@ -4,6 +4,7 @@
  *
  * Screens:
  *   Upload     → Processing → Results
+ *   Upload     → Settings
  *
  * Author: Matheus Machado Rech
  * License: Research use only — not for clinical diagnosis
@@ -15,11 +16,12 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { StyleSheet } from 'react-native';
+import { StyleSheet, TouchableOpacity, Text } from 'react-native';
 
 import UploadScreen     from './src/screens/UploadScreen';
 import ProcessingScreen from './src/screens/ProcessingScreen';
 import ResultsScreen    from './src/screens/ResultsScreen';
+import SettingsScreen   from './src/screens/SettingsScreen';
 import { colors } from './src/theme';
 
 const Stack = createStackNavigator();
@@ -69,6 +71,28 @@ export default function App() {
               name="Results"
               component={ResultsScreen}
               options={{ title: 'Results' }}
+            />
+            <Stack.Screen
+              name="Settings"
+              component={SettingsScreen}
+              options={{
+                title: 'Settings',
+                headerShown: false,
+                gestureEnabled: true,
+                // Slide up from bottom on iOS, standard slide on Android
+                cardStyleInterpolator: ({ current, layouts }) => ({
+                  cardStyle: {
+                    transform: [
+                      {
+                        translateY: current.progress.interpolate({
+                          inputRange:  [0, 1],
+                          outputRange: [layouts.screen.height, 0],
+                        }),
+                      },
+                    ],
+                  },
+                }),
+              }}
             />
           </Stack.Navigator>
         </NavigationContainer>

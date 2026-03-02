@@ -2,7 +2,9 @@
  * ProcessingScreen — Pipeline execution with step-by-step progress
  *
  * Receives navigation params from UploadScreen:
- *   { uri, fileName, fileSize, isSample }
+ *   { fileType, uri, uris, fileName, fileSize, isSample, numSlices }
+ *
+ * fileType: 'nifti' | 'dicom' | 'image' | 'sample'
  *
  * Runs the pipeline in the background, updating progress callbacks.
  * On success, navigates to ResultsScreen.
@@ -22,11 +24,19 @@ import {
   InteractionManager,
 } from 'react-native';
 import { colors, spacing, radius, typography } from '../theme';
-import { PIPELINE_STEPS, loadNiftiFromUri, loadSampleVolume, runPipeline } from '../pipeline/Pipeline';
+import {
+  PIPELINE_STEPS,
+  loadNiftiFromUri,
+  loadSampleVolume,
+  loadDicomSeriesFromUris,
+  loadImageFromUri,
+  runPipeline,
+} from '../pipeline/Pipeline';
 import ProgressSteps from '../components/ProgressSteps';
 
 export default function ProcessingScreen({ navigation, route }) {
-  const { uri, fileName, fileSize, isSample } = route.params || {};
+  const { fileType, uri, uris, fileName, fileSize, isSample, numSlices } =
+    route.params || {};
 
   const [currentStep, setCurrentStep]   = useState(0);
   const [stepDetail, setStepDetail]     = useState('Initializing pipeline…');
@@ -66,26 +76,67 @@ export default function ProcessingScreen({ navigation, route }) {
 
     try {
       let volume;
+      const resolvedFileType = isSample ? 'sample' : (fileType || 'nifti');
 
-      if (isSample) {
-        volume = await loadSampleVolume(onProgress);
-      } else {
-        volume = await loadNiftiFromUri(uri, fileName, fileSize, onProgress);
+      // ── Load volume based on file type ─────────────────────────────────────
+      switch (resolvedFileType) {
+        case 'sample':
+          volume = await loadSampleVolume(onProgress);
+          break;
+
+        case 'nifti':
+          volume = await loadNiftiFromUri(uri, fileName, fileSize, onProgress);
+          break;
+
+        case 'dicom': {
+          // uris: array of DICOM file URIs
+          const dicomUris = uris || (uri ? [uri] : []);
+          if (dicomUris.length === 0) {
+            throw new Error('No DICOM file URIs provided.');
+          }
+          volume = await loadDicomSeriesFromUris(
+            dicomUris,
+            fileName,
+            fileSize,
+            onProgress
+          );
+          break;
+        }
+
+        case 'image':
+          volume = await loadImageFromUri(uri, fileName, fileSize, onProgress);
+          // Warn user about image-mode limitations
+          if (volume._imageWarning) {
+            console.warn('Image mode:', volume._imageWarning);
+          }
+          break;
+
+        default:
+          // Fallback: try NIfTI
+          volume = await loadNiftiFromUri(uri, fileName, fileSize, onProgress);
+          break;
       }
 
-      // Update metadata display
+      // ── Update metadata display ────────────────────────────────────────────
+      const datatypeLabel = (() => {
+        if (volume.header?.source === 'DICOM') return 'DICOM';
+        if (volume.header?.source === 'Image') return 'IMAGE';
+        return `INT${volume.header?.bitpix ?? '?'}`;
+      })();
+
       setMetadata({
         shape:    `${volume.shape[0]}×${volume.shape[1]}×${volume.shape[2]}`,
         spacing:  `${volume.spacing[0].toFixed(2)}×${volume.spacing[1].toFixed(2)}×${volume.spacing[2].toFixed(2)} mm`,
-        datatype: `INT${volume.header.bitpix}`,
+        datatype: datatypeLabel,
         fileSize: volume.fileSize
           ? `${(volume.fileSize / 1024 / 1024).toFixed(1)} MB`
           : '—',
       });
 
+      // ── Run pipeline ───────────────────────────────────────────────────────
       const results = await runPipeline(volume, onProgress);
 
-      // Navigate to results
+      // ── Navigate to results ────────────────────────────────────────────────
       navigation.replace('Results', { results, volume });
 
     } catch (err) {
@@ -97,6 +148,17 @@ export default function ProcessingScreen({ navigation, route }) {
       );
     }
   }
+
+  // ── File type label for display ────────────────────────────────────────────
+  const fileTypeLabel = (() => {
+    if (isSample) return 'Sample CT';
+    switch (fileType) {
+      case 'dicom': return numSlices ? `DICOM Series · ${numSlices} slices` : 'DICOM';
+      case 'image': return 'Image File';
+      case 'nifti': return 'NIfTI Volume';
+      default:      return 'Volume';
+    }
+  })();
 
   return (
     <ScrollView
@@ -111,8 +173,13 @@ export default function ProcessingScreen({ navigation, route }) {
 
         <Text style={styles.processingTitle}>Analyzing your scan…</Text>
         <Text style={styles.processingFilename} numberOfLines={2}>
-          {fileName || 'NIfTI volume'}
+          {fileName || fileTypeLabel}
         </Text>
+        {fileType && !isSample && (
+          <View style={styles.fileTypeBadge}>
+            <Text style={styles.fileTypeBadgeText}>{fileTypeLabel}</Text>
+          </View>
+        )}
       </View>
 
       {/* Volume metadata (shown once parsed) */}
@@ -120,7 +187,7 @@ export default function ProcessingScreen({ navigation, route }) {
         <View style={styles.metadataGrid}>
           <MetaItem label="Shape"    value={metadata.shape} />
           <MetaItem label="Spacing"  value={metadata.spacing} />
-          <MetaItem label="Datatype" value={metadata.datatype} />
+          <MetaItem label="Format"   value={metadata.datatype} />
           <MetaItem label="File size" value={metadata.fileSize} />
         </View>
       )}
@@ -190,6 +257,21 @@ const styles = StyleSheet.create({
     color: colors.muted,
     textAlign: 'center',
     maxWidth: 300,
+  },
+  fileTypeBadge: {
+    marginTop: 8,
+    backgroundColor: 'rgba(88,166,255,0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(88,166,255,0.25)',
+    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+  },
+  fileTypeBadgeText: {
+    fontFamily: 'monospace',
+    fontSize: 11,
+    color: colors.accent,
+    letterSpacing: 0.5,
   },
 
   // Metadata grid

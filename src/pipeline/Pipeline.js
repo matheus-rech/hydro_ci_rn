@@ -5,11 +5,21 @@
  * Coordinates: brain mask → CSF → morphology → components
  * → Evans Index → Callosal Angle → Volume → NPH score
  *
+ * New in v2.1.0:
+ *   - MedSAM2 AI segmentation integration (optional, with fallback)
+ *   - DICOM series loading via DicomReader
+ *   - Image file loading via DicomReader.parseImageFile
+ *
  * Author: Matheus Machado Rech
  */
 
 import pako from 'pako';
 import { parseNifti } from './NiftiReader';
+import {
+  parseDicomSeries,
+  parseImageFile,
+} from './DicomReader';
+import * as MedSAMClient from './MedSAMClient';
 import {
   voxelIndex,
   closing3D,
@@ -23,7 +33,7 @@ import {
 // ─── Pipeline steps definition ────────────────────────────────────────────────
 
 export const PIPELINE_STEPS = [
-  'Parsing NIfTI header',
+  'Parsing volume header',
   'Building brain mask',
   'Extracting CSF voxels',
   'Morphological filtering',
@@ -45,11 +55,13 @@ function delay(ms = 0) {
 /**
  * Run the full hydrocephalus morphometrics pipeline.
  *
- * @param {Object} volume - { shape, spacing, data, header }
- * @param {Function} onProgress - (stepIndex: number, message: string) => void
+ * @param {Object}   volume          - { shape, spacing, data, header }
+ * @param {Function} onProgress      - (stepIndex: number, message: string) => void
+ * @param {Object}   [options]       - Optional settings
+ * @param {number[]} [options.box]   - MedSAM2 bounding box [x1,y1,z1,x2,y2,z2] in voxels
  * @returns {Object} results with all metrics
  */
-export async function runPipeline(volume, onProgress = () => {}) {
+export async function runPipeline(volume, onProgress = () => {}, options = {}) {
   const { shape, spacing, data } = volume;
   const [X, Y, Z] = shape;
   const total = X * Y * Z;
@@ -57,6 +69,14 @@ export async function runPipeline(volume, onProgress = () => {}) {
   const progress = (step, msg) => {
     onProgress(step, msg);
   };
+
+  // ── Check MedSAM2 availability before pipeline starts ───────────────────────
+  progress(0, 'Checking MedSAM2 availability…');
+  const medsam = await MedSAMClient.checkHealth();
+  if (medsam.available) {
+    progress(0, `MedSAM2 available (${medsam.model || 'server'})`);
+  }
+  await delay(10);
 
   // ── Step 0: Header already parsed ────────────────────────────────────────
   progress(0, `Volume: ${X}×${Y}×${Z}, spacing: ${spacing.map((s) => s.toFixed(2)).join('×')} mm`);
@@ -172,8 +192,48 @@ export async function runPipeline(volume, onProgress = () => {}) {
 
   let ventCount = 0;
   for (let i = 0; i < total; i++) ventCount += ventMask[i];
-  progress(4, `Ventricle voxels: ${ventCount.toLocaleString()}`);
+  progress(4, `Ventricle voxels (threshold): ${ventCount.toLocaleString()}`);
   await delay(20);
+
+  // ── Step 4c: MedSAM2 AI Segmentation (optional) ──────────────────────────
+  // Runs after threshold segmentation. If MedSAM2 is available AND a box
+  // prompt is provided, replaces ventMask with the AI result.
+  // Falls back to threshold result automatically on any error.
+  let usedMedSAM2 = false;
+
+  if (medsam.available && options?.box) {
+    progress(4, 'Running MedSAM2 AI segmentation…');
+    await delay(10);
+
+    try {
+      const aiMask = await MedSAMClient.segment(
+        data,
+        shape,
+        spacing,
+        options.box
+      );
+
+      // Validate the AI mask has reasonable voxel count
+      let aiVentCount = 0;
+      for (let i = 0; i < aiMask.length; i++) aiVentCount += aiMask[i];
+
+      if (aiVentCount > 50) {
+        ventMask = aiMask;
+        ventCount = aiVentCount;
+        usedMedSAM2 = true;
+        progress(4, `MedSAM2 segmentation complete: ${aiVentCount.toLocaleString()} voxels`);
+      } else {
+        progress(4, 'MedSAM2 returned empty mask — using threshold fallback…');
+      }
+    } catch (err) {
+      console.warn('MedSAM2 segmentation failed:', err.message);
+      progress(4, `MedSAM2 failed (${err.message.slice(0, 60)}) — using threshold fallback…`);
+    }
+    await delay(20);
+  } else if (medsam.available && !options?.box) {
+    progress(4, 'MedSAM2 available but no box prompt — using threshold segmentation');
+    await delay(10);
+  }
 
   if (ventCount < 100) {
     throw new Error(
@@ -229,6 +289,9 @@ export async function runPipeline(volume, onProgress = () => {}) {
     spacing,
     // Pass through the mask for rendering
     ventMask,
+    // Segmentation metadata
+    segmentationMethod: usedMedSAM2 ? 'MedSAM2' : 'threshold',
+    medSAM2Available:   medsam.available,
   };
 }
 
@@ -299,7 +362,7 @@ export async function loadSampleVolume(onProgress = () => {}) {
  * Reads the file as base64 and converts to ArrayBuffer, then parses.
  */
 export async function loadNiftiFromUri(uri, fileName, fileSize, onProgress = () => {}) {
-  onProgress(0, 'Reading file...');
+  onProgress(0, 'Reading NIfTI file...');
   await delay(20);
 
   // Read using expo-file-system
@@ -322,6 +385,73 @@ export async function loadNiftiFromUri(uri, fileName, fileSize, onProgress = () 
   const volume = await parseNifti(buffer);
   volume.fileName = fileName;
   volume.fileSize = fileSize;
+  return volume;
+}
+
+// ─── DICOM Series Loader ──────────────────────────────────────────────────────
+
+/**
+ * Read a DICOM series from an array of local URIs.
+ * Reads each file as base64, converts to ArrayBuffer, then parses as a series.
+ *
+ * Shows per-slice progress via onProgress.
+ */
+export async function loadDicomSeriesFromUris(uris, fileName, fileSize, onProgress = () => {}) {
+  const FileSystem = require('expo-file-system');
+  const total = uris.length;
+
+  onProgress(0, `Reading ${total} DICOM file${total > 1 ? 's' : ''}…`);
+  await delay(20);
+
+  const buffers = [];
+
+  for (let i = 0; i < total; i++) {
+    if (total > 5) {
+      onProgress(0, `Reading DICOM files… ${i + 1} / ${total}`);
+    }
+
+    const b64 = await FileSystem.readAsStringAsync(uris[i], {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+
+    const binaryStr = atob(b64);
+    const buf = new ArrayBuffer(binaryStr.length);
+    const u8  = new Uint8Array(buf);
+    for (let j = 0; j < binaryStr.length; j++) {
+      u8[j] = binaryStr.charCodeAt(j);
+    }
+    buffers.push(buf);
+
+    // Yield to UI every 5 slices to keep UI responsive
+    if (i % 5 === 4) await delay(0);
+  }
+
+  onProgress(0, `Parsing DICOM series (${total} slices)…`);
+  await delay(10);
+
+  const volume = await parseDicomSeries(buffers, (current, totalSlices) => {
+    if (totalSlices > 10) {
+      onProgress(0, `Parsing DICOM slices… ${current} / ${totalSlices}`);
+    }
+  });
+
+  volume.fileName = fileName;
+  volume.fileSize = fileSize;
+  return volume;
+}
+
+// ─── Image File Loader ────────────────────────────────────────────────────────
+
+/**
+ * Load a PNG/JPG image as a pseudo-volume compatible with runPipeline().
+ */
+export async function loadImageFromUri(uri, fileName, fileSize, onProgress = () => {}) {
+  onProgress(0, 'Loading image file…');
+  await delay(20);
+
+  const volume = await parseImageFile(uri);
+  volume.fileName = fileName || uri.split('/').pop();
+  volume.fileSize = fileSize || 0;
   return volume;
 }
 
