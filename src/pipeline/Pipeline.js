@@ -29,6 +29,8 @@ import {
   computeEvansIndex,
   computeCallosalAngle,
 } from './Morphometrics';
+import { getModelConfig, getMLModelIds } from '../models/ModelRegistry';
+import { generateResult } from '../models/ApiModelProvider';
 
 // ─── Pipeline steps definition ────────────────────────────────────────────────
 
@@ -293,6 +295,59 @@ export async function runPipeline(volume, onProgress = () => {}, options = {}) {
     segmentationMethod: usedMedSAM2 ? 'MedSAM2' : 'threshold',
     medSAM2Available:   medsam.available,
   };
+}
+
+// ─── Multi-Model Pipeline ─────────────────────────────────────────────────────
+
+export const MULTI_MODEL_STEPS = [
+  ...PIPELINE_STEPS,
+  'Running MedSAM2',
+  'Running SAM3',
+  'Running YOLOvx',
+  'Comparing models',
+];
+
+/**
+ * Run the classical pipeline then each ML model in sequence.
+ * Returns { classical, medsam2?, sam3?, yolovx? } map.
+ * Each ML model failure is caught individually — classical always returns.
+ */
+export async function runMultiModelPipeline(volume, onProgress = () => {}) {
+  // Run classical pipeline (steps 0–8)
+  const classical = await runPipeline(volume, onProgress);
+
+  const mlModelIds = getMLModelIds();
+  const results = { classical };
+
+  for (let i = 0; i < mlModelIds.length; i++) {
+    const modelId = mlModelIds[i];
+    const stepIdx = PIPELINE_STEPS.length + i;
+    const config = getModelConfig(modelId);
+
+    onProgress(stepIdx, `Running ${config?.name || modelId}...`);
+    await delay(10);
+
+    try {
+      const modelResult = await generateResult(
+        modelId,
+        volume.data,
+        classical.ventMask,
+        classical.shape,
+        classical.spacing
+      );
+      results[modelId] = modelResult;
+      onProgress(stepIdx, `${config?.name || modelId} complete`);
+    } catch (err) {
+      console.warn(`Model ${modelId} failed:`, err.message);
+      onProgress(stepIdx, `${config?.name || modelId} unavailable`);
+    }
+  }
+
+  // Final comparison step
+  onProgress(PIPELINE_STEPS.length + mlModelIds.length, 'Comparing models...');
+  await delay(50);
+
+  return results;
 }
 
 // ─── Sample Data Loader ───────────────────────────────────────────────────────

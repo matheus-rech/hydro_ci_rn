@@ -424,7 +424,7 @@ export function computeCallosalAngle(ventMask, shape, spacing) {
  * Applies brain window (W:80 L:40 → HU 0..80) and ventricle overlay.
  * Returns Uint8ClampedArray of size X * Y * 4.
  */
-export function generateAxialPixels(data, mask, shape, sliceZ, showMask) {
+export function generateAxialPixels(data, mask, shape, sliceZ, showMask, overlayColor = { r: 88, g: 166, b: 255 }) {
   const [X, Y] = shape;
   const pixels = new Uint8ClampedArray(X * Y * 4);
   const lo = 0, hi = 80;
@@ -440,9 +440,9 @@ export function generateAxialPixels(data, mask, shape, sliceZ, showMask) {
         showMask && mask && mask[voxelIndex(shape, x, y, sliceZ)] === 1;
 
       if (isMask) {
-        pixels[pixIdx]     = Math.floor(gray * 0.4 + 88 * 0.6);
-        pixels[pixIdx + 1] = Math.floor(gray * 0.4 + 166 * 0.6);
-        pixels[pixIdx + 2] = Math.floor(gray * 0.4 + 255 * 0.6);
+        pixels[pixIdx]     = Math.floor(gray * 0.4 + overlayColor.r * 0.6);
+        pixels[pixIdx + 1] = Math.floor(gray * 0.4 + overlayColor.g * 0.6);
+        pixels[pixIdx + 2] = Math.floor(gray * 0.4 + overlayColor.b * 0.6);
       } else {
         pixels[pixIdx]     = gray;
         pixels[pixIdx + 1] = gray;
@@ -459,7 +459,7 @@ export function generateAxialPixels(data, mask, shape, sliceZ, showMask) {
  * Z is flipped so inferior is at the bottom of the image.
  * Returns Uint8ClampedArray of size X * Z * 4.
  */
-export function generateCoronalPixels(data, mask, shape, sliceY) {
+export function generateCoronalPixels(data, mask, shape, sliceY, overlayColor = { r: 88, g: 166, b: 255 }) {
   const [X, Y, Z] = shape;
   const pixels = new Uint8ClampedArray(X * Z * 4);
   const lo = 0, hi = 80;
@@ -476,9 +476,9 @@ export function generateCoronalPixels(data, mask, shape, sliceY) {
       const isMask = mask && mask[voxelIndex(shape, x, sliceY, z)] === 1;
 
       if (isMask) {
-        pixels[pixIdx]     = Math.floor(gray * 0.4 + 88 * 0.6);
-        pixels[pixIdx + 1] = Math.floor(gray * 0.4 + 166 * 0.6);
-        pixels[pixIdx + 2] = Math.floor(gray * 0.4 + 255 * 0.6);
+        pixels[pixIdx]     = Math.floor(gray * 0.4 + overlayColor.r * 0.6);
+        pixels[pixIdx + 1] = Math.floor(gray * 0.4 + overlayColor.g * 0.6);
+        pixels[pixIdx + 2] = Math.floor(gray * 0.4 + overlayColor.b * 0.6);
       } else {
         pixels[pixIdx]     = gray;
         pixels[pixIdx + 1] = gray;

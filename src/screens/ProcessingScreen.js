@@ -25,13 +25,14 @@ import {
 } from 'react-native';
 import { colors, spacing, radius, typography } from '../theme';
 import {
-  PIPELINE_STEPS,
+  MULTI_MODEL_STEPS,
   loadNiftiFromUri,
   loadSampleVolume,
   loadDicomSeriesFromUris,
   loadImageFromUri,
-  runPipeline,
+  runMultiModelPipeline,
 } from '../pipeline/Pipeline';
+import { setResults } from '../models/ResultsStore';
 import ProgressSteps from '../components/ProgressSteps';
 
 export default function ProcessingScreen({ navigation, route }) {
@@ -133,11 +134,17 @@ export default function ProcessingScreen({ navigation, route }) {
           : '—',
       });
 
-      // ── Run pipeline ───────────────────────────────────────────────────────
-      const results = await runPipeline(volume, onProgress);
+      const multiModelResults = await runMultiModelPipeline(volume, onProgress);
 
-      // ── Navigate to results ────────────────────────────────────────────────
-      navigation.replace('Results', { results, volume });
+      // Store multi-model results in module store (avoids serialization limits)
+      setResults(multiModelResults);
+
+      // Navigate with classical results + flag
+      navigation.replace('Results', {
+        results: multiModelResults.classical,
+        volume,
+        hasMultiModel: true,
+      });
 
     } catch (err) {
       console.error('Pipeline error:', err);
@@ -194,7 +201,7 @@ export default function ProcessingScreen({ navigation, route }) {
 
       {/* Progress steps */}
       <ProgressSteps
-        steps={PIPELINE_STEPS}
+        steps={MULTI_MODEL_STEPS}
         currentStep={currentStep}
         detail={stepDetail}
       />
