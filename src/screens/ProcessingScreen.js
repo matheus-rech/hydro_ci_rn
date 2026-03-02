@@ -139,11 +139,12 @@ export default function ProcessingScreen({ navigation, route }) {
       // Store multi-model results in module store (avoids serialization limits)
       setResults(multiModelResults);
 
-      // Navigate with classical results + flag
+      // Only show comparison tab if at least one ML model produced results
+      const mlKeys = Object.keys(multiModelResults).filter(k => k !== 'classical');
       navigation.replace('Results', {
         results: multiModelResults.classical,
         volume,
-        hasMultiModel: true,
+        hasMultiModel: mlKeys.length > 0,
       });
 
     } catch (err) {

@@ -30,7 +30,7 @@ import {
   computeCallosalAngle,
 } from './Morphometrics';
 import { getModelConfig, getMLModelIds } from '../models/ModelRegistry';
-import { generateResult } from '../models/ApiModelProvider';
+import { generateResult, validateModelConfig } from '../models/ApiModelProvider';
 
 // ─── Pipeline steps definition ────────────────────────────────────────────────
 
@@ -323,8 +323,17 @@ export async function runMultiModelPipeline(volume, onProgress = () => {}) {
     const modelId = mlModelIds[i];
     const stepIdx = PIPELINE_STEPS.length + i;
     const config = getModelConfig(modelId);
+    const name = config?.name || modelId;
 
-    onProgress(stepIdx, `Running ${config?.name || modelId}...`);
+    // Pre-validate configuration before attempting expensive API call
+    const validation = validateModelConfig(modelId);
+    if (!validation.ok) {
+      console.warn(`Model ${modelId} skipped:`, validation.errors.join('; '));
+      onProgress(stepIdx, `${name}: not configured`);
+      continue;
+    }
+
+    onProgress(stepIdx, `Running ${name}...`);
     await delay(10);
 
     try {
@@ -336,10 +345,10 @@ export async function runMultiModelPipeline(volume, onProgress = () => {}) {
         classical.spacing
       );
       results[modelId] = modelResult;
-      onProgress(stepIdx, `${config?.name || modelId} complete`);
+      onProgress(stepIdx, `${name} complete`);
     } catch (err) {
       console.warn(`Model ${modelId} failed:`, err.message);
-      onProgress(stepIdx, `${config?.name || modelId} unavailable`);
+      onProgress(stepIdx, `${name}: ${err.message}`);
     }
   }
 

@@ -46,7 +46,8 @@ const METRICS = [
 ];
 
 export default function MetricsComparisonTable({ multiModelResults }) {
-  const modelConfigs = getAllModelConfigs();
+  // Only show columns for models that have actual results
+  const modelConfigs = getAllModelConfigs().filter(c => multiModelResults[c.id]);
 
   return (
     <View style={styles.container}>

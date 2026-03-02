@@ -93,7 +93,8 @@ export default function ComparisonView({ multiModelResults, volumeData, shape })
       <View style={styles.bboxSummary}>
         {modelConfigs.map((config) => {
           const result = multiModelResults[config.id];
-          const count = result?.boundingBoxes?.length || 0;
+          if (!result) return null;
+          const count = result.boundingBoxes?.length || 0;
           return (
             <View key={config.id} style={styles.bboxItem}>
               <View style={[styles.bboxDot, { backgroundColor: config.color }]} />
