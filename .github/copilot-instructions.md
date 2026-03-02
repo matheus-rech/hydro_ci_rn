@@ -73,13 +73,39 @@ if err := client.Start(ctx); err != nil {
 defer client.Stop()
 session, err := client.CreateSession(ctx, &copilot.SessionConfig{Model: "gpt-4.1"})
 if err != nil {
-    log.Fatal(err)
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    copilot "github.com/github/copilot-sdk/go"
+)
+
+func main() {
+    ctx := context.Background()
+    client := copilot.NewClient(nil)
+
+    if err := client.Start(ctx); err != nil {
+        log.Fatal(err)
+    }
+    defer client.Stop()
+
+    session, err := client.CreateSession(ctx, &copilot.SessionConfig{Model: "gpt-4.1"})
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    response, err := session.SendAndWait(ctx, copilot.MessageOptions{Prompt: "Hello!"})
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    if response.Data != nil && response.Data.Content != nil {
+        fmt.Println(*response.Data.Content)
+    }
 }
-response, err := session.SendAndWait(ctx, copilot.MessageOptions{Prompt: "Hello!"})
-if err != nil {
-    log.Fatal(err)
-}
-fmt.Println(*response.Data.Content)
 ```
 
 **.NET:**
