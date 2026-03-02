@@ -12,7 +12,7 @@
  * Author: Matheus Machado Rech
  */
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -25,15 +25,23 @@ import { colors, spacing, radius, typography } from '../theme';
 import MetricCard  from '../components/MetricCard';
 import NPHBadge    from '../components/NPHBadge';
 import SliceViewer from '../components/SliceViewer';
+import ComparisonView from '../components/ComparisonView';
+import { getResults, clearResults } from '../models/ResultsStore';
 import { runSanityChecks } from '../pipeline/Pipeline';
 
 export default function ResultsScreen({ navigation, route }) {
-  const { results, volume } = route.params || {};
+  const { results, volume, hasMultiModel } = route.params || {};
 
   const [currentAxialSlice, setCurrentAxialSlice] = useState(
     results?.evansSlice >= 0 ? results.evansSlice : Math.floor((volume?.shape?.[2] || 1) / 2)
   );
   const [showMask, setShowMask] = useState(true);
+  const [activeTab, setActiveTab] = useState('detail');
+
+  const multiModelResults = useMemo(() => {
+    if (!hasMultiModel) return null;
+    return getResults();
+  }, [hasMultiModel]);
 
   if (!results || !volume) {
     return (
@@ -69,6 +77,7 @@ export default function ResultsScreen({ navigation, route }) {
   const warnings = runSanityChecks(results);
 
   const handleNewScan = useCallback(() => {
+    clearResults();
     navigation.navigate('Upload');
   }, [navigation]);
 
@@ -87,8 +96,42 @@ export default function ResultsScreen({ navigation, route }) {
         </TouchableOpacity>
       </View>
 
+      {/* ── Tab Bar (when multi-model results available) ──────────────── */}
+      {hasMultiModel && multiModelResults && (
+        <View style={styles.tabBar}>
+          <TouchableOpacity
+            style={[styles.tab, activeTab === 'detail' && styles.tabActive]}
+            onPress={() => setActiveTab('detail')}
+            activeOpacity={0.7}
+          >
+            <Text style={[styles.tabText, activeTab === 'detail' && styles.tabTextActive]}>
+              Detail
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.tab, activeTab === 'compare' && styles.tabActive]}
+            onPress={() => setActiveTab('compare')}
+            activeOpacity={0.7}
+          >
+            <Text style={[styles.tabText, activeTab === 'compare' && styles.tabTextActive]}>
+              Comparison
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.content}>
 
+        {/* ── Comparison Tab ──────────────────────────────────────────────── */}
+        {activeTab === 'compare' && multiModelResults && (
+          <ComparisonView
+            multiModelResults={multiModelResults}
+            volumeData={volume.data}
+            shape={shape}
+          />
+        )}
+
+        {activeTab === 'detail' && (<>
         {/* ── A: NPH Assessment ───────────────────────────────────────────── */}
         <SectionHeader title="NPH Assessment" />
         <NPHBadge nphScore={nphScore} nphPct={nphPct} />
@@ -270,6 +313,7 @@ export default function ResultsScreen({ navigation, route }) {
             Data reference: CADS BrainCT-1mm (CC BY 4.0)
           </Text>
         </View>
+        </>)}
       </ScrollView>
     </View>
   );
@@ -589,6 +633,32 @@ const styles = StyleSheet.create({
     color: colors.red,
     fontSize: 12,
     fontWeight: typography.medium,
+  },
+
+  // Tab bar
+  tabBar: {
+    flexDirection: 'row',
+    backgroundColor: colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border2,
+  },
+  tab: {
+    flex: 1,
+    paddingVertical: 10,
+    alignItems: 'center',
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+  },
+  tabActive: {
+    borderBottomColor: colors.accent,
+  },
+  tabText: {
+    fontSize: 13,
+    fontWeight: typography.medium,
+    color: colors.muted,
+  },
+  tabTextActive: {
+    color: colors.accent,
   },
 
   // Scroll content

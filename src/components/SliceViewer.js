@@ -197,6 +197,7 @@ export default function SliceViewer({
   evansData,
   callosalData,
   evansSlice,
+  overlayColor,
 }) {
   const [X, Y, Z] = shape;
 
@@ -216,16 +217,16 @@ export default function SliceViewer({
     try {
       let pixels;
       if (mode === 'axial') {
-        pixels = generateAxialPixels(volumeData, mask, shape, sliceIndex, showMask);
+        pixels = generateAxialPixels(volumeData, mask, shape, sliceIndex, showMask, overlayColor);
       } else {
-        pixels = generateCoronalPixels(volumeData, mask, shape, sliceIndex);
+        pixels = generateCoronalPixels(volumeData, mask, shape, sliceIndex, overlayColor);
       }
       return encodePNG(imgWidth, imgHeight, pixels);
     } catch (e) {
       console.warn('SliceViewer: failed to generate pixels', e);
       return null;
     }
-  }, [volumeData, mask, shape, sliceIndex, showMask, mode]);
+  }, [volumeData, mask, shape, sliceIndex, showMask, mode, overlayColor]);
 
   // Build SVG annotation
   const annotation = useMemo(() => {
