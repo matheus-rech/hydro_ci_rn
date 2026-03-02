@@ -30,7 +30,7 @@ import {
   computeCallosalAngle,
 } from './Morphometrics';
 import { getModelConfig, getMLModelIds } from '../models/ModelRegistry';
-import { generateResult, validateModelConfig } from '../models/ApiModelProvider';
+import { generateResult, validateModelConfig, preSerializeVolume } from '../models/ApiModelProvider';
 
 // ─── Pipeline steps definition ────────────────────────────────────────────────
 
@@ -319,6 +319,18 @@ export async function runMultiModelPipeline(volume, onProgress = () => {}) {
   const mlModelIds = getMLModelIds();
   const results = { classical };
 
+  // Check which models are actually configured before serializing
+  const configuredModels = mlModelIds.filter((id) => {
+    const v = validateModelConfig(id);
+    return v.ok;
+  });
+
+  // Serialize volume once for all configured ML models
+  let volumeB64 = null;
+  if (configuredModels.length > 0) {
+    volumeB64 = preSerializeVolume(volume.data, classical.shape);
+  }
+
   for (let i = 0; i < mlModelIds.length; i++) {
     const modelId = mlModelIds[i];
     const stepIdx = PIPELINE_STEPS.length + i;
@@ -334,7 +346,6 @@ export async function runMultiModelPipeline(volume, onProgress = () => {}) {
     }
 
     onProgress(stepIdx, `Running ${name}...`);
-    await delay(10);
 
     try {
       const modelResult = await generateResult(
@@ -342,7 +353,8 @@ export async function runMultiModelPipeline(volume, onProgress = () => {}) {
         volume.data,
         classical.ventMask,
         classical.shape,
-        classical.spacing
+        classical.spacing,
+        { volumeB64 }
       );
       results[modelId] = modelResult;
       onProgress(stepIdx, `${name} complete`);
@@ -354,7 +366,6 @@ export async function runMultiModelPipeline(volume, onProgress = () => {}) {
 
   // Final comparison step
   onProgress(PIPELINE_STEPS.length + mlModelIds.length, 'Comparing models...');
-  await delay(50);
 
   return results;
 }

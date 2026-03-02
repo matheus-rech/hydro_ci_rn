@@ -111,17 +111,20 @@ export function validateModelConfig(modelId) {
 
 // ─── Volume Serialization ───────────────────────────────────────────────────
 
+function uint8ToBase64(bytes) {
+  const CHUNK = 0x2000; // 8192 — safe for String.fromCharCode.apply
+  const chunks = [];
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    chunks.push(String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK)));
+  }
+  return btoa(chunks.join(''));
+}
+
 function serializeVolumeForApi(volumeData, shape) {
   const f32 = volumeData instanceof Float32Array ? volumeData : new Float32Array(volumeData);
   const bytes = new Uint8Array(f32.buffer, f32.byteOffset, f32.byteLength);
-
   const compressed = pako.gzip(bytes);
-
-  let binary = '';
-  for (let i = 0; i < compressed.length; i++) {
-    binary += String.fromCharCode(compressed[i]);
-  }
-  return btoa(binary);
+  return uint8ToBase64(compressed);
 }
 
 // ─── Mask Decoding ──────────────────────────────────────────────────────────
@@ -326,7 +329,15 @@ function computeBoundingBoxes(mask, shape, spacing) {
 
 // ─── Main Entry Point ───────────────────────────────────────────────────────
 
-export async function generateResult(modelId, volumeData, classicalMask, shape, spacing) {
+/**
+ * Pre-serialize volume data for API calls (gzip + base64).
+ * Call once, then pass to generateResult() for each model to avoid re-serializing.
+ */
+export function preSerializeVolume(volumeData, shape) {
+  return serializeVolumeForApi(volumeData, shape);
+}
+
+export async function generateResult(modelId, volumeData, classicalMask, shape, spacing, options = {}) {
   const config = getModelConfig(modelId);
   if (!config) throw new Error(`Unknown model: ${modelId}`);
 
@@ -340,8 +351,8 @@ export async function generateResult(modelId, volumeData, classicalMask, shape, 
   const apiConfig = configs[modelId];
   const startTime = performance.now();
 
-  // Serialize volume for API
-  const volumeB64 = serializeVolumeForApi(volumeData, shape);
+  // Use pre-serialized volume if provided, otherwise serialize now
+  const volumeB64 = options.volumeB64 || serializeVolumeForApi(volumeData, shape);
 
   // Call the appropriate backend adapter
   let mask;
