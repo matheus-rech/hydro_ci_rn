@@ -16,6 +16,10 @@ npx expo start            # Start Metro bundler (dev)
 npx expo start --ios      # iOS simulator
 npx expo start --android  # Android emulator
 
+# Agent server (for AI interpretation)
+cd server && npm install  # First time only
+cd server && npm start    # Start on localhost:3001
+
 # EAS builds (requires EXPO_TOKEN)
 eas build --platform android --profile preview --non-interactive
 eas build --platform ios --profile preview --non-interactive
@@ -42,7 +46,7 @@ Upload → Settings
    - Sequentially attempts each ML model API (medsam2, sam3, yolovx), skipping unconfigured ones
    - Returns `{ classical, medsam2?, sam3?, yolovx? }` map
 3. Results are stored in **ResultsStore** (module-level `let _results = null`) to avoid React Navigation's serialization limit on typed arrays (~10MB ventricle masks). Only `{ results: classical, volume, hasMultiModel }` passes via nav params.
-4. **Results** retrieves full multi-model data from `getResults()` and shows Detail tab (classical metrics) and optionally a Comparison tab (2×2 grid, metrics table).
+4. **Results** retrieves full multi-model data from `getResults()` and shows Detail tab (classical metrics), optionally a Comparison tab (2×2 grid, metrics table), and an AI Interpretation section powered by Claude Agent SDK.
 
 ### Volume Object
 
@@ -86,6 +90,26 @@ Extends classical with ML model APIs. Each model is isolated via try/catch. `val
 
 API request format: volume as gzip-compressed Float32Array, base64-encoded. Response: gzip-compressed Uint8Array mask, base64-encoded.
 
+### AI Interpretation (Claude Agent SDK)
+
+The Results screen includes an optional AI interpretation section (`AIInterpretation.js`) that sends morphometric results to a Claude Agent SDK backend server for clinical analysis.
+
+**Architecture**: RN app → `AgentService.js` (HTTP client) → `server/src/index.js` (Express) → Claude Agent SDK with MCP medical tools
+
+**Server setup**:
+```bash
+cd server && cp .env.example .env  # Add ANTHROPIC_API_KEY
+npm start                           # Runs on localhost:3001
+```
+
+The server uses 4 custom MCP tools (`server/src/tools/medicalTools.js`):
+- `check_normal_ranges` — Classify metrics as normal/borderline/abnormal
+- `get_icd10_codes` — Look up hydrocephalus-related ICD-10 codes
+- `get_clinical_guidelines` — NPH diagnosis, shunt criteria, monitoring guidelines
+- `compare_models` — Cross-model agreement analysis
+
+The component degrades gracefully: if the server is unavailable, it shows a muted "unavailable" state instead of errors. The purple accent color (`colors.purple: #bc8cff`) visually distinguishes AI-generated content from measurement data.
+
 ### Environment Variable Injection
 
 **Critical**: `process.env` does NOT work at React Native runtime. The chain is:
@@ -93,6 +117,10 @@ API request format: volume as gzip-compressed Float32Array, base64-encoded. Resp
 `~/.zshrc` → `app.config.js` reads `process.env` at Metro start → `Constants.expoConfig.extra` at runtime
 
 In app code: `import Constants from 'expo-constants'; Constants.expoConfig?.extra?.HF_TOKEN`
+
+Additional env vars for AI interpretation:
+- `ANTHROPIC_API_KEY` — Required in `server/.env` for Claude Agent SDK
+- `AGENT_API_URL` — Optional, defaults to `http://localhost:3001`
 
 After adding/changing env vars, restart Metro (`npx expo start`).
 

@@ -30,5 +30,6 @@ module.exports = ({ config }) => ({
     MEDSAM2_API_URL: process.env.MEDSAM2_API_URL || null,
     SAM3_MODEL_VERSION: process.env.SAM3_MODEL_VERSION || null,
     YOLOVX_API_URL: process.env.YOLOVX_API_URL || null,
+    AGENT_API_URL: process.env.AGENT_API_URL || 'http://localhost:3001',
   },
 });

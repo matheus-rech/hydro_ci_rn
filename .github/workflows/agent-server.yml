@@ -1,0 +1,156 @@
+# Agent Server: validate + test the Claude Agent SDK backend
+# Ensures server boots, health endpoint responds, and MCP tools load
+name: Agent Server CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - '.github/workflows/agent-server.yml'
+  pull_request:
+    paths:
+      - 'server/**'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Syntax check (ESM import validation)
+        run: node --check src/index.js && node --check src/tools/medicalTools.js
+
+      - name: Health check smoke test
+        env:
+          PORT: "3001"
+        run: |
+          # Start server without API key (agent unavailable, but server boots)
+          node src/index.js &
+          SERVER_PID=$!
+
+          # Wait for server to be ready
+          for i in $(seq 1 10); do
+            if curl -sf http://localhost:3001/api/health > /dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+
+          # Verify health endpoint
+          HEALTH=$(curl -sf http://localhost:3001/api/health)
+          echo "Health response: $HEALTH"
+
+          # Validate JSON structure
+          echo "$HEALTH" | node -e "
+            const data = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+            if (data.status !== 'ok') process.exit(1);
+            if (data.agentAvailable !== false) {
+              console.error('Expected agentAvailable=false without API key');
+              process.exit(1);
+            }
+            console.log('Health check passed: server boots, agent correctly reports unavailable');
+          "
+
+          # Verify interpret endpoint rejects without key
+          HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:3001/api/interpret \
+            -H 'Content-Type: application/json' \
+            -d '{"results":{"evansIndex":0.35}}')
+
+          if [ "$HTTP_CODE" = "503" ]; then
+            echo "Interpret correctly returns 503 without API key"
+          else
+            echo "Expected 503, got $HTTP_CODE"
+            kill $SERVER_PID 2>/dev/null
+            exit 1
+          fi
+
+          kill $SERVER_PID 2>/dev/null
+          echo "All smoke tests passed"
+
+  integration:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    needs: validate
+    defaults:
+      run:
+        working-directory: server
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Integration test with Claude API
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PORT: "3001"
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "ANTHROPIC_API_KEY not configured - skipping integration test"
+            echo "Add it in Settings > Secrets > Actions to enable"
+            exit 0
+          fi
+
+          node src/index.js &
+          SERVER_PID=$!
+
+          for i in $(seq 1 10); do
+            if curl -sf http://localhost:3001/api/health > /dev/null 2>&1; then break; fi
+            sleep 1
+          done
+
+          # Verify agent is available
+          HEALTH=$(curl -sf http://localhost:3001/api/health)
+          echo "$HEALTH" | node -e "
+            const d = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+            if (!d.agentAvailable) { console.error('Agent should be available'); process.exit(1); }
+            console.log('Agent available with API key');
+          "
+
+          # Send a real interpretation request
+          echo "Sending interpretation request (may take up to 60s)..."
+          RESULT=$(curl -sf -X POST http://localhost:3001/api/interpret \
+            --max-time 65 \
+            -H 'Content-Type: application/json' \
+            -d '{"results":{"evansIndex":0.35,"callosalAngle":85,"ventVolMl":62,"nphScore":3,"nphPct":87}}')
+
+          echo "$RESULT" | node -e "
+            const d = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+            if (!d.success) { console.error('Interpretation failed:', d); process.exit(1); }
+            const i = d.interpretation;
+            console.log('Interpretation received');
+            console.log('  Summary:', (i.summary || '').slice(0,100));
+            console.log('  Findings:', (i.findings || []).length, 'items');
+            console.log('  NPH likelihood:', i.nphLikelihood);
+            console.log('  ICD-10 codes:', (i.icd10Codes || []).length, 'codes');
+            console.log('  Recommendations:', (i.recommendations || []).length, 'items');
+          "
+
+          kill $SERVER_PID 2>/dev/null
+          echo "Integration test passed"

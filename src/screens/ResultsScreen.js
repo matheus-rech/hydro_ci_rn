@@ -8,6 +8,7 @@
  *   D. Coronal Slice Viewer with callosal angle annotation
  *   E. Detailed Measurements Table
  *   F. Sanity Checks
+ *   G. AI Interpretation (Claude Agent SDK)
  *
  * Author: Matheus Machado Rech
  */
@@ -26,6 +27,7 @@ import MetricCard  from '../components/MetricCard';
 import NPHBadge    from '../components/NPHBadge';
 import SliceViewer from '../components/SliceViewer';
 import ComparisonView from '../components/ComparisonView';
+import AIInterpretation from '../components/AIInterpretation';
 import { getResults, clearResults } from '../models/ResultsStore';
 import { runSanityChecks } from '../pipeline/Pipeline';
 
@@ -293,6 +295,13 @@ export default function ResultsScreen({ navigation, route }) {
             ))}
           </View>
         )}
+
+        {/* ── G: AI Interpretation ──────────────────────────────────────────── */}
+        <SectionHeader title="AI Interpretation" />
+        <AIInterpretation
+          results={results}
+          multiModelResults={multiModelResults}
+        />
 
         {/* New Scan button */}
         <TouchableOpacity
